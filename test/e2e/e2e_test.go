@@ -181,25 +181,19 @@ spec:
 			}).Should(Succeed(), "MCPServer CR status did not become True")
 
 			By("querying the route URL and verifying that the output is as expected")
-			var routeHost, routePath string
+			var routeHost string
 			Eventually(func(g Gomega) {
-				cmd := exec.Command("kubectl", "get", "route", crName, "-n", namespace, "-o", "jsonpath={.spec.host} {.spec.path}")
+				cmd := exec.Command("kubectl", "get", "route", crName, "-n", namespace, "-o", "jsonpath={.spec.host}")
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(output).NotTo(BeEmpty(), "Route host and path should not be empty")
+				g.Expect(output).NotTo(BeEmpty(), "Route host should not be empty")
 
-				// The output will be in the format "host /path", so we split it by the space.
-				parts := strings.Split(strings.TrimSpace(output), " ")
-				g.Expect(parts).To(HaveLen(2), "Expected output to contain both a host and a path")
-
-				routeHost = parts[0]
-				routePath = parts[1]
+				routeHost = strings.TrimSpace(output)
 				g.Expect(routeHost).NotTo(BeEmpty())
-				g.Expect(routePath).NotTo(BeEmpty())
-			}).Should(Succeed(), "Should be able to get the route hostname and path")
+			}).Should(Succeed(), "Should be able to get the route hostname")
 
 			// Create the route URL using the host and the sse path
-			routeURL := fmt.Sprintf("http://%s%s", routeHost, routePath)
+			routeURL := fmt.Sprintf("http://%s/sse", routeHost)
 			_, _ = fmt.Fprintf(GinkgoWriter, "Querying route URL: %s\n", routeURL)
 
 			Eventually(func(g Gomega) {
@@ -229,6 +223,26 @@ spec:
 				g.Expect(responseString).To(MatchRegexp(expectedPattern), "Response should match expected SSE format")
 
 			}).Should(Succeed(), "The route should be available and respond correctly")
+
+			By("verifying that the /message endpoint is also accessible through the route")
+			// Test that the /message endpoint is accessible (should return a JSON-RPC error for invalid session, but not a 503)
+			messageURL := fmt.Sprintf("http://%s/message?sessionId=test-invalid-session", routeHost)
+			Eventually(func(g Gomega) {
+				client := http.Client{
+					Timeout: 15 * time.Second,
+				}
+				resp, err := client.Post(messageURL, "application/json", strings.NewReader("{}"))
+				g.Expect(err).NotTo(HaveOccurred())
+				defer func() {
+					err := resp.Body.Close()
+					g.Expect(err).NotTo(HaveOccurred())
+				}()
+
+				// We expect a 200 status with a JSON-RPC error response, not a 503 "Service Unavailable"
+				g.Expect(resp.StatusCode).To(Equal(http.StatusOK))
+				g.Expect(resp.Header.Get("Content-Type")).To(ContainSubstring("application/json"))
+
+			}).Should(Succeed(), "The /message endpoint should be accessible through the route")
 		})
 		// +kubebuilder:scaffold:e2e-webhooks-checks
 
